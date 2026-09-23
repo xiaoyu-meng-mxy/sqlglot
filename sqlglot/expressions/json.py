@@ -12,21 +12,11 @@ class CheckJson(Expression, Func):
 class GetJsonObject(Expression, Binary, Func):
     """Extract JSON as text, unquoting strings but retaining objects and arrays.
 
-    The path is kept verbatim because Hive/Spark's path grammar and null handling
-    differ from JSON_EXTRACT_SCALAR. Native generators must preserve dynamic paths.
-
-    Trino generation requires JSON_QUERY (Trino 383+) and unquoted scalar strings. It supports
-    literal paths consisting of $, dotted ASCII identifiers, single-quoted bracket
-    keys (without apostrophes, backslashes or wildcards), and nonnegative array
-    indices up to 2147483647 (at most ten digits). Other paths, including dynamic,
-    wildcard and invalid paths, report unsupported rather than using scalar extraction.
-
-    This translation targets standard JSON without duplicate keys. Spark's permissive
-    JSON extensions (e.g. single-quoted strings, unescaped control characters and
-    trailing content) are outside its scope. JSON_QUERY returns SQL NULL on malformed
-    JSON or missing paths. Named null members produce SQL NULL; root and indexed
-    array nulls produce the string 'null'. Other target dialects retain their historical
-    best-effort scalar extraction translation.
+    Keep the original path for native Hive/Spark generation. Trino uses JSON_QUERY
+    with OMIT QUOTES for parsed literal paths, preserving objects and arrays.
+    JSON null is filtered to retain the historical SQL NULL result, including at
+    the root or an array index where Spark instead returns the text 'null'. Other
+    targets and unparsed/dynamic paths retain the scalar-extraction translation.
     """
 
     _sql_names = ["GET_JSON_OBJECT"]

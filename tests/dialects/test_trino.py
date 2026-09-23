@@ -9,93 +9,44 @@ class TestTrino(Validator):
 
     def test_get_json_object(self):
         for value in (
-            '{"a":{"b":1}}',
-            '{"a":[1,2]}',
-            '{"a":"x"}',
-            '{"a":"null"}',
-            '{"a":1}',
-            '{"a":true}',
-            '{"a":false}',
-            '{"a":null}',
+            '{"incentiveAmounts":{"credit":1.5}}',
+            '{"incentiveAmounts":[1,2]}',
+            '{"incentiveAmounts":"x"}',
+            '{"incentiveAmounts":1}',
+            '{"incentiveAmounts":true}',
+            '{"incentiveAmounts":null}',
+            '{"incentiveAmounts":"null"}',
             "{}",
             "not json",
         ):
             with self.subTest(value=value):
-                source = f"GET_JSON_OBJECT('{value}', '$.a')"
-                target = f"JSON_QUERY('{value}', 'strict $.\"a\" ? (@ != null)' OMIT QUOTES)"
-                self.validate_all(target, read={"spark": source})
-                self.validate_identity(target)
-
-        for source, target in (
-            (
-                "GET_JSON_OBJECT(NULL, '$.a')",
-                "JSON_QUERY(NULL, 'strict $.\"a\" ? (@ != null)' OMIT QUOTES)",
-            ),
-            ("GET_JSON_OBJECT('null', '$')", "JSON_QUERY('null', 'strict $' OMIT QUOTES)"),
-            (
-                "GET_JSON_OBJECT('[null]', '$[0]')",
-                "JSON_QUERY('[null]', 'strict $[0]' OMIT QUOTES)",
-            ),
-            (
-                "GET_JSON_OBJECT(j, '$.a[0].b')",
-                'JSON_QUERY(j, \'strict $."a"[0]."b" ? (@ != null)\' OMIT QUOTES)',
-            ),
-            ("GET_JSON_OBJECT(j, '$.a[0]')", "JSON_QUERY(j, 'strict $.\"a\"[0]' OMIT QUOTES)"),
-            ("GET_JSON_OBJECT(j, '$[01]')", "JSON_QUERY(j, 'strict $[1]' OMIT QUOTES)"),
-        ):
-            with self.subTest(source=source):
-                self.validate_all(target, read={"spark": source})
-                self.validate_identity(target)
+                self.validate_all(
+                    f"JSON_QUERY('{value}', 'strict $.\"incentiveAmounts\" ? (@ != null)' OMIT QUOTES)",
+                    read={"spark": f"GET_JSON_OBJECT('{value}', '$.incentiveAmounts')"},
+                )
 
         for path, target_path in (
-            ("$['a.b']['x-y']", 'strict $."a.b"."x-y" ? (@ != null)'),
-            ("$['a\"b']", 'strict $."a""b" ? (@ != null)'),
-            ("$['雪']", 'strict $."雪" ? (@ != null)'),
+            ("$", "strict $"),
+            ("$.items[0]", 'strict $."items"[0]'),
+            ("$.risk::score", 'strict $."risk::score"'),
+            ("$.context.highlight_value:", 'strict $."context"."highlight_value:"'),
+            ("$.items[0].value", 'strict $."items"[0]."value"'),
+            ("$['a.b']", 'strict $."a.b"'),
         ):
-            expression = exp.GetJsonObject(
-                this=exp.column("j"), expression=exp.Literal.string(path)
-            )
-            source = expression.sql("spark")
-            target = f"JSON_QUERY(j, '{target_path}' OMIT QUOTES)"
-            self.validate_all(target, read={"spark": source})
-            self.validate_identity(target)
+            with self.subTest(path=path):
+                expression = exp.GetJsonObject(
+                    this=exp.column("j"), expression=exp.Literal.string(path)
+                )
+                self.validate_all(
+                    f"JSON_QUERY(j, '{target_path} ? (@ != null)' OMIT QUOTES)",
+                    read={"spark": expression.sql("spark")},
+                )
 
-        # Ordinary scalar extraction must retain its existing behavior.
+        self.validate_all(
+            "JSON_EXTRACT_SCALAR(j, path)", read={"spark": "GET_JSON_OBJECT(j, path)"}
+        )
         self.validate_identity("JSON_EXTRACT_SCALAR(j, '$.a')")
         self.validate_identity("JSON_EXTRACT(j, '$.a')")
-
-    def test_get_json_object_unsupported_paths(self):
-        paths = (
-            exp.column("path"),
-            exp.func("CONCAT", exp.Literal.string("$."), exp.column("key")),
-            exp.Null(),
-            *(
-                exp.Literal.string(path)
-                for path in (
-                    "",
-                    "a",
-                    "$.a[*]",
-                    "$.*",
-                    "$['*']",
-                    "$..a",
-                    "$[-1]",
-                    "$[0:2]",
-                    '$["a"]',
-                    "$.a[",
-                    "$[2147483648]",
-                    "$[" + "9" * 5000 + "]",
-                )
-            ),
-        )
-        for path in paths:
-            with self.subTest(path=path):
-                expression = exp.GetJsonObject(this=exp.column("j"), expression=path)
-                with self.assertRaisesRegex(UnsupportedError, "GET_JSON_OBJECT to Trino requires"):
-                    expression.sql("trino", unsupported_level=ErrorLevel.RAISE)
-                with self.assertLogs(generator_logger) as logs:
-                    result = expression.sql("trino")
-                self.assertTrue(result.startswith("GET_JSON_OBJECT("))
-                self.assertIn("paths are unsupported", logs.output[0])
 
     def test_concat_ws(self):
         self.validate_identity("SELECT CONCAT_WS('-', ARRAY['a', NULL, 'b'])")

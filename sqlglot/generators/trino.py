@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import re
-
 from sqlglot import exp, transforms
 from sqlglot.dialects.dialect import (
     merge_without_target_sql,
@@ -11,6 +9,7 @@ from sqlglot.dialects.dialect import (
     rename_func,
 )
 from sqlglot.generators.presto import PrestoGenerator, amend_exploded_column_table
+from sqlglot.dialects.hive import Hive
 
 
 class TrinoGenerator(PrestoGenerator):
@@ -55,45 +54,25 @@ class TrinoGenerator(PrestoGenerator):
     }
 
     def getjsonobject_sql(self, expression: exp.GetJsonObject) -> str:
-        path = expression.expression
-        parts = []
-        if path.is_string and path.name.startswith("$"):
-            remaining = path.name[1:]
-            while remaining:
-                match = re.match(
-                    r"\.([A-Za-z_][A-Za-z_0-9]*)|\['([^'\\]+)'\]|\[([0-9]+)\]", remaining
-                )
-                if not match:
-                    break
-                key, quoted_key, index = match.groups()
-                if quoted_key == "*" or (index and (len(index) > 10 or int(index) > 2147483647)):
-                    break
-                parts.append(
-                    f"[{int(index)}]"
-                    if index
-                    else '."' + (key or quoted_key).replace('"', '""') + '"'
-                )
-                remaining = remaining[match.end() :]
-            if not remaining:
-                # Spark suppresses null object members, but returns 'null' for a root
-                # or indexed array null. Filtering before unquoting preserves "null".
-                json_path = "strict $" + "".join(parts)
-                if parts and not parts[-1].startswith("["):
-                    json_path += " ? (@ != null)"
-                return self.sql(
-                    exp.JSONExtract(
-                        this=expression.this,
-                        expression=exp.Literal.string(json_path),
-                        json_query=True,
-                        quote=exp.JSONExtractQuote(option=exp.var("OMIT")),
-                    )
-                )
+        path = Hive().to_json_path(expression.expression)
+        if not isinstance(path, exp.JSONPath):
+            return super().getjsonobject_sql(expression)
 
-        self.unsupported(
-            "GET_JSON_OBJECT to Trino requires a literal path containing only object keys "
-            "and nonnegative array indices; dynamic, wildcard and other paths are unsupported"
+        path_sql = "strict " + "".join(
+            '."' + part.name.replace('"', '""') + '"'
+            if isinstance(part, exp.JSONPathKey) and isinstance(part.this, str)
+            else self.json_path_part(part)
+            for part in path.expressions
         )
-        return self.function_fallback_sql(expression)
+        path_sql += " ? (@ != null)"
+        return self.sql(
+            exp.JSONExtract(
+                this=expression.this,
+                expression=exp.Literal.string(path_sql),
+                json_query=True,
+                quote=exp.JSONExtractQuote(option=exp.var("OMIT")),
+            )
+        )
 
     def concatws_sql(self, expression: exp.ConcatWs) -> str:
         if expression.args.get("flatten"):
